@@ -36,6 +36,6 @@ Para proteger a los usuarios durante las interacciones con un protocolo DeFi ext
 
 - **Protección de Deadline:** Todas las funciones de depósito también requieren un ``_deadline``. Esto evita que una transacción quede "atascada" en la mempool y se ejecute mucho después a un precio desfavorable.
 
-- **SafeERC20:**Todas las transferencias de tokens (depósitos, retiros e intercambios) se realizan utilizando la librería ``SafeERC20`` de OpenZeppelin para prevenir errores con tokens no estándar.
+- **SafeERC20:** Todas las transferencias de tokens (depósitos, retiros e intercambios) se realizan utilizando la librería ``SafeERC20`` de OpenZeppelin para prevenir errores con tokens no estándar.
 
 - **Bloqueo de receive y fallback:** Las funciones ``receive()`` y ``fallback()`` están deshabilitadas (``revert KipuBank__FallbackNotAllowed``). Esto es una medida de seguridad para forzar a los usuarios a utilizar las funciones de depósito correctas (``depositEth`` o ``deposit``), que incluyen las protecciones de slippage y deadline.
