@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 // Helpers y estándar ERC20 de V2
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 // NUEVAS Interfaces para Uniswap y WETH
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
@@ -14,7 +15,7 @@ import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
  * @title KipuBank V3
  * @author Facundo Criado
  */
-contract KipuBank is Ownable {
+contract KipuBank is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using SafeERC20 for IWETH;
 
@@ -137,26 +138,13 @@ contract KipuBank is Ownable {
     function depositEth(
         uint256 _amountOutMin,
         uint256 _deadline
-    ) external payable nonZeroValue checkDeadline(_deadline) {
+    ) external payable nonZeroValue checkDeadline(_deadline) nonReentrant {
         // Valido Capacidad del Banco
         // Consulto cuanto USDC recibo ANTES de hacer el swap.
         address[] memory path = new address[](2);
         path[0] = address(i_weth);
         path[1] = address(i_usdcToken);
 
-        uint256[] memory expectedAmounts = i_uniswapRouter.getAmountsOut(
-            msg.value,
-            path
-        );
-        uint256 expectedUsdc = expectedAmounts[1];
-
-        // Valido contra el minimo esperado por el usuario
-        if (expectedUsdc < _amountOutMin) {
-            revert KipuBank__InvalidPath(); // Errorpara slippage
-        }
-
-        // Valido contra el limite del banco
-        _checkBankCap(expectedUsdc);
 
         // Ejecuto Swap (ETH -> USDC)
         uint256[] memory actualAmounts = i_uniswapRouter
@@ -166,8 +154,11 @@ contract KipuBank is Ownable {
             address(this), // El USDC se envia a este contrato
             _deadline
         );
-
+        
         uint256 actualUsdcReceived = actualAmounts[1];
+
+        // Valido contra el limite del banco
+        _checkBankCap(actualUsdcReceived);
 
         //Acredito Saldo (Efecto)
         _creditUserUSDC(msg.sender, actualUsdcReceived);
@@ -192,7 +183,7 @@ contract KipuBank is Ownable {
         uint256 _amount,
         uint256 _amountOutMin,
         uint256 _deadline
-    ) external nonZeroAmount(_amount) checkDeadline(_deadline){
+    ) external nonZeroAmount(_amount) checkDeadline(_deadline) nonReentrant {
         // Transfiero tokens al contrato
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
@@ -206,29 +197,16 @@ contract KipuBank is Ownable {
         } else {
             // Swap de Token -> USDC
 
-            address[] memory path = new address[](2);
-            path[0] = _token;
-            path[1] = address(i_usdcToken);
-
-            uint256[] memory expectedAmounts = i_uniswapRouter.getAmountsOut(
-                _amount,
-                path
-            );
-            uint256 expectedUsdc = expectedAmounts[1];
-
-            if (expectedUsdc < _amountOutMin) {
-                revert KipuBank__InvalidPath();
-            }
-            //Valido Capacidad del Banco
-            _checkBankCap(expectedUsdc);
-
-            //Apruebo y Ejecuti Swap
+            //Swap para obtener el valor real
             usdcReceived = _swapToUSDC(
                 _token,
                 _amount,
-                _amountOutMin,
+                _amountOutMin, 
                 _deadline
             );
+
+            //Valido Capacidad del Banco
+            _checkBankCap(usdcReceived);
         }
 
         // Acredito el Saldo (Efecto)
@@ -245,7 +223,7 @@ contract KipuBank is Ownable {
      * @notice Permite a un usuario retirar su saldo en USDC.
      * @param _amountUSDC La cantidad de USDC a retirar.
      */
-    function withdraw(uint256 _amountUSDC) external nonZeroAmount(_amountUSDC) {
+    function withdraw(uint256 _amountUSDC) external nonZeroAmount(_amountUSDC) nonReentrant {
         // --- Checks ---
         if (_amountUSDC > i_withdrawalLimitUSDC) {
             revert KipuBank__WithdrawLimitExceeded(
@@ -284,7 +262,7 @@ contract KipuBank is Ownable {
         uint256 _deadline
     ) private returns (uint256) {
         // Apruebo al router para que gaste el token
-        IERC20(_tokenIn).approve(address(i_uniswapRouter), _amountIn);
+        IERC20(_tokenIn).forceApprove(address(i_uniswapRouter), _amountIn);
 
         address[] memory path = new address[](2);
         path[0] = _tokenIn;
@@ -306,11 +284,12 @@ contract KipuBank is Ownable {
      * @dev Verifica si añadir una cantidad de USDC excede el limite del banco.
      */
     function _checkBankCap(uint256 _usdcToAdd) private view {
+        //El currentBalance ya incluye el _usdcToAdd porque el swap ya se hizo
         uint256 currentBalance = i_usdcToken.balanceOf(address(this));
-        if (currentBalance + _usdcToAdd > i_bankCapUSDC) {
+        if (currentBalance > i_bankCapUSDC) {
             revert KipuBank__BankCapExceeded(
                 _usdcToAdd,
-                currentBalance,
+                currentBalance - _usdcToAdd,
                 i_bankCapUSDC
             );
         }
